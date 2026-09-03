@@ -1,0 +1,350 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE rfc [
+<!ENTITY nbsp "&#160;">
+<!ENTITY zwsp "&#8203;">
+<!ENTITY nbhy "&#8209;">
+<!ENTITY wj "&#8288;">
+]>
+<rfc xmlns:xi="http://www.w3.org/2001/XInclude"
+     category="exp"
+     docName="draft-przygienda-fast-flooding-rtx-indication-00"
+     ipr="trust200902"
+     submissionType="IETF"
+     consensus="false"
+     obsoletes=""
+     updates="9681"
+     xml:lang="en"
+     tocInclude="true"
+     tocDepth="4"
+     symRefs="true"
+     sortRefs="true"
+     version="3">
+
+  <front>
+    <title abbrev="Fast Flooding RTX Indication">Retransmission Indication for IS-IS Fast Flooding</title>
+
+    <author initials="T." surname="Przygienda" fullname="Tony Przygienda">
+      <organization>HPE Juniper Networking</organization>
+      <address>
+        <email>antoni.przygienda@hpe.com</email>
+      </address>
+    </author>
+
+    <date/>
+
+    <area>Routing</area>
+    <workgroup>lsr</workgroup>
+
+    <keyword>IS-IS</keyword>
+    <keyword>fast flooding</keyword>
+    <keyword>retransmission</keyword>
+    <keyword>congestion control</keyword>
+
+    <abstract>
+      <t>
+        <xref target="RFC9681"/> defines a Flooding Parameters TLV that allows an
+        IS-IS node to advertise, among other things, a Receive Window (RWIN) that
+        bounds the number of unacknowledged Link State PDUs (LSPs) a neighbor may
+        have outstanding, and an LSPs-per-PSNP (LPP) threshold that triggers
+        immediate acknowledgment. In practice these two mechanisms -- a credit-based
+        flow-control window and an acknowledgment cadence -- are the parts of
+        <xref target="RFC9681"/> that are realistically deployed at scale; the
+        sender-side congestion-control algorithms described in that document are
+        local, optional, and not standardized.
+      </t>
+      <t>
+        A credit-based window alone does not signal congestion: as long as
+        acknowledgments keep freeing credit, a sender may keep refilling the
+        window up to RWIN even while it is actively retransmitting LSPs on that
+        adjacency. Without an explicit, mandatory-to-implement reaction to
+        observed retransmission, fast flooding at scale can degenerate into
+        sustained retransmission storms instead of converging.
+      </t>
+      <t>
+        This document defines a lightweight Retransmission (RTX) indication,
+        carried as a new flag in the existing Flags sub-TLV of the Flooding
+        Parameters TLV, that a node sets while it has outstanding LSP
+        retransmissions on an adjacency. It specifies recommended sender and
+        receiver behavior that ties this indication directly to the RWIN and LPP
+        mechanisms already defined in <xref target="RFC9681"/>, without requiring
+        implementation of a separate congestion-window algorithm.
+      </t>
+    </abstract>
+  </front>
+
+  <middle>
+
+    <section anchor="intro" numbered="true" toc="default">
+      <name>Introduction</name>
+      <t>
+        <xref target="RFC9681"/> ("IS-IS Fast Flooding") introduces the Flooding
+        Parameters TLV to let IS-IS neighbors negotiate faster and more efficient
+        Link State PDU (LSP) flooding. Of the sub-TLVs it defines, two provide the
+        practical basis for flow control that implementations are expected to
+        deploy at scale:
+      </t>
+      <ul>
+        <li>
+          The Receive Window (RWIN) sub-TLV (<xref target="RFC9681" section="4.6"/>),
+          which bounds the number of unacknowledged LSPs a sender may have
+          outstanding toward a given neighbor (<xref target="RFC9681" section="6.2.1"/>).
+        </li>
+        <li>
+          The LSPs-per-PSNP (LPP) sub-TLV (<xref target="RFC9681" section="4.3"/>),
+          which sets the number of unacknowledged LSPs that triggers an immediate
+          PSNP rather than waiting for the periodic PSNP timer
+          (<xref target="RFC9681" section="5.1"/>).
+        </li>
+      </ul>
+      <t>
+        RWIN is, by design, a flow-control mechanism: it prevents a sender from
+        overrunning a receiver's buffering capacity, but it says nothing about
+        whether the path or the receiver is currently congested. A sender that
+        naively refills its outstanding-LSP count up to RWIN as soon as
+        acknowledgments arrive will do so even while some of those
+        acknowledgments are arriving late enough to have already triggered
+        retransmission timers. Sustained retransmissions are direct evidence of
+        loss or of a receiver falling behind, yet <xref target="RFC9681"/> leaves
+        the reaction to that evidence as an unspecified, optional, sender-local
+        congestion-control algorithm (<xref target="RFC9681" section="6.2.2"/>).
+      </t>
+      <t>
+        Experience indicates that if that reaction is not standardized in some
+        minimal form, it will not be consistently implemented, and the fast
+        flooding rates enabled by <xref target="RFC9681"/> can make things worse,
+        not better, under loss or overload: nodes keep sending at the full
+        advertised window and retransmission storms are sustained rather than
+        damped. This document closes that gap without requiring a full
+        congestion-window algorithm. It defines a single-bit Retransmission (RTX)
+        indication, carried in the existing Flags sub-TLV
+        (<xref target="RFC9681" section="4.4"/>), and describes how a node
+        SHOULD adjust its effective sending behavior relative to RWIN, and how a
+        neighbor observing the indication SHOULD adjust its own RWIN and LPP
+        advertisements, while that indication is set.
+      </t>
+    </section>
+
+    <section anchor="reqlang" numbered="true" toc="default">
+      <name>Requirements Language</name>
+      <t>
+        The key words "<bcp14>MUST</bcp14>", "<bcp14>MUST NOT</bcp14>",
+        "<bcp14>REQUIRED</bcp14>", "<bcp14>SHALL</bcp14>",
+        "<bcp14>SHALL NOT</bcp14>", "<bcp14>SHOULD</bcp14>",
+        "<bcp14>SHOULD NOT</bcp14>", "<bcp14>RECOMMENDED</bcp14>",
+        "<bcp14>NOT RECOMMENDED</bcp14>", "<bcp14>MAY</bcp14>", and
+        "<bcp14>OPTIONAL</bcp14>" in this document are to be interpreted as
+        described in BCP&nbsp;14 <xref target="RFC2119"/> <xref target="RFC8174"/>
+        when, and only when, they appear in all capitals, as shown here.
+      </t>
+    </section>
+
+    <section anchor="problem" numbered="true" toc="default">
+      <name>Motivation</name>
+      <t>
+        Consider a point-to-point adjacency where the receiver has advertised
+        RWIN=60 and LPP=15, as suggested in <xref target="RFC9681" section="6.2.4.1"/>.
+        The sender transmits LSPs up to its outstanding-LSP ceiling, which absent
+        any other information it sets to RWIN. If the receiver becomes
+        momentarily overloaded, its PSNPs are delayed, the sender's retransmit
+        timers fire (as governed by minimumLSPTransmissionInterval
+        <xref target="ISO10589"/>), and the sender retransmits. Because retransmitted LSPs
+        are, from the point of view of the credit-window bookkeeping, simply
+        outstanding LSPs like any other, the sender has no built-in reason to
+        reduce the number of LSPs it keeps outstanding: as soon as any
+        acknowledgment (even a late one) arrives and frees credit, it refills
+        up to RWIN again.
+      </t>
+      <t>
+        This is workable at the flooding rates for which <xref target="RFC9681"/>'s
+        historical defaults were designed, but it is precisely the failure mode
+        that fast flooding at larger scale must avoid: a receiver that falls
+        behind by a small margin can be kept continuously at its retransmission
+        threshold by a sender that never backs off, which in turn keeps
+        generating the retransmissions that caused the problem in the first
+        place. A minimal, mandatory-to-honor signal that ties directly into the
+        RWIN and LPP mechanisms already deployed is sufficient to break this
+        cycle without requiring implementations to build and tune a separate
+        congestion-control algorithm.
+      </t>
+    </section>
+
+    <section anchor="rtx-flag" numbered="true" toc="default">
+      <name>The RTX Flag</name>
+      <t>
+        This document defines a new bit in the Flags sub-TLV of the Flooding
+        Parameters TLV <xref target="RFC9681" section="4.4"/>, called the RTX
+        flag (bit TBD1, suggested value 1; bit 0 is the existing O-flag defined
+        in <xref target="RFC9681"/>).
+      </t>
+      <t>
+        A node sets the RTX flag on an adjacency while it has one or more
+        outstanding (unacknowledged, retransmit-timer-expired at least once)
+        LSPs toward the neighbor on that adjacency. It clears the RTX flag once
+        all such LSPs have been acknowledged. As with other Flooding Parameters
+        TLV state, the flag is advertised in IIHs and PSNPs
+        (<xref target="RFC9681" section="4"/>) and reflects the most recently
+        advertised value until updated; a node SHOULD advertise the Flags
+        sub-TLV promptly on a change in RTX state, rather than waiting for the
+        next periodic transmission, given how time-sensitive the condition is.
+      </t>
+    </section>
+
+    <section anchor="procedures" numbered="true" toc="default">
+      <name>Procedures</name>
+
+      <section anchor="sender" numbered="true" toc="default">
+        <name>Sender Behavior</name>
+        <t>
+          While the RTX flag is set for a given adjacency, the sender SHOULD
+          reduce its effective outstanding-LSP ceiling on that adjacency below
+          the full advertised RWIN, for example to half of RWIN, rather than
+          continuing to refill up to RWIN as acknowledgments arrive. The exact
+          reduction is a local matter; a simple halving is sufficient to
+          convert sustained retransmission into a self-damping condition
+          without the bookkeeping of a full congestion window
+          (<xref target="RFC9681" section="6.2.2"/>).
+        </t>
+        <t>
+          The sender SHOULD restore its ceiling toward the full advertised RWIN
+          only gradually after the RTX flag clears, rather than immediately,
+          to avoid oscillating back into the same condition.
+        </t>
+      </section>
+
+      <section anchor="receiver" numbered="true" toc="default">
+        <name>Receiver Behavior</name>
+        <t>
+          A node observing that its neighbor has set the RTX flag toward it
+          SHOULD NOT increase the RWIN value it advertises to that neighbor
+          while the flag remains set, and MAY advertise a reduced RWIN and/or a
+          reduced LPP (causing more frequent, smaller PSNPs) for the duration,
+          to help the sender recover the adjacency more quickly
+          (<xref target="RFC9681" section="4.3"/>, <xref target="RFC9681" section="4.6"/>).
+        </t>
+      </section>
+
+    </section>
+
+    <section anchor="interaction" numbered="true" toc="default">
+      <name>Interaction with RFC 9681</name>
+      <t>
+        This document does not change the encoding, semantics, or use of the
+        RWIN or LPP sub-TLVs defined in <xref target="RFC9681"/>; it only adds
+        a bit to the existing Flags sub-TLV and defines recommended behavior
+        that references those existing sub-TLVs. Nodes that do not implement
+        this document continue to interoperate exactly as described in
+        <xref target="RFC9681"/>; the RTX flag is simply unset (or ignored, if
+        received from a neighbor that implements it and this one does not).
+      </t>
+      <t>
+        This document intentionally does not modify or replace the
+        sender-side congestion control algorithms of
+        <xref target="RFC9681" section="6.2.2"/> or
+        <xref target="RFC9681" section="6.3"/>; an implementation that already
+        implements one of those algorithms MAY treat the RTX flag purely as an
+        additional congestion signal within that algorithm, in place of, or in
+        addition to, the sender-local backoff of <xref target="sender"/>.
+      </t>
+    </section>
+
+    <section anchor="iana" numbered="true" toc="default">
+      <name>IANA Considerations</name>
+      <t>
+        IANA is requested to allocate the following bit in the "IS-IS Bit
+        Values for Flooding Parameters Flags Sub-TLV" registry
+        (<xref target="RFC9681" section="7.3"/>):
+      </t>
+      <table anchor="tab-iana">
+        <name>RTX Flag Bit Allocation</name>
+        <thead>
+          <tr><th>Bit</th><th>Description</th><th>Reference</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>TBD1 (suggested: 1)</td><td>Retransmission (RTX) flag</td><td>This document</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section anchor="security" numbered="true" toc="default">
+      <name>Security Considerations</name>
+      <t>
+        This document reuses the Flooding Parameters TLV and its
+        authentication properties defined in <xref target="RFC9681"/>; the
+        security considerations of that document
+        (<xref target="RFC9681" section="8"/>) apply unchanged.
+      </t>
+      <t>
+        A false or forged RTX indication has similar consequences to a forged
+        RWIN or LPP value discussed in <xref target="RFC9681" section="8"/>: an
+        attacker able to inject a spoofed indication on an adjacency could
+        induce a neighbor to needlessly reduce its RWIN, slowing convergence,
+        or could suppress a legitimate indication to prevent a peer from
+        backing off. Both require the same link-layer access already assumed
+        by <xref target="RFC9681" section="8"/>, and the impact is bounded to
+        the affected adjacency and is self-correcting once the RTX flag state
+        is next advertised truthfully.
+      </t>
+    </section>
+
+    <section anchor="ack" numbered="true" toc="default">
+      <name>Acknowledgements</name>
+      <t>
+        TBD.
+      </t>
+    </section>
+
+  </middle>
+
+  <back>
+    <references>
+      <name>Normative References</name>
+      <reference anchor="RFC9681" target="https://www.rfc-editor.org/info/rfc9681">
+        <front>
+          <title>IS-IS Fast Flooding</title>
+          <author initials="B." surname="Decraene" fullname="Bruno Decraene"/>
+          <author initials="L." surname="Ginsberg" fullname="Les Ginsberg"/>
+          <author initials="T." surname="Li" fullname="Tony Li"/>
+          <author initials="G." surname="Solignac" fullname="Guillaume Solignac"/>
+          <author initials="M." surname="Karasek" fullname="Marek Karasek"/>
+          <author initials="G." surname="Van de Velde" fullname="Gunter Van de Velde"/>
+          <author initials="T." surname="Przygienda" fullname="Tony Przygienda"/>
+          <date month="November" year="2024"/>
+        </front>
+        <seriesInfo name="RFC" value="9681"/>
+        <seriesInfo name="DOI" value="10.17487/RFC9681"/>
+      </reference>
+      <reference anchor="RFC2119" target="https://www.rfc-editor.org/info/rfc2119">
+        <front>
+          <title>Key words for use in RFCs to Indicate Requirement Levels</title>
+          <author initials="S." surname="Bradner" fullname="S. Bradner"/>
+          <date month="March" year="1997"/>
+        </front>
+        <seriesInfo name="BCP" value="14"/>
+        <seriesInfo name="RFC" value="2119"/>
+        <seriesInfo name="DOI" value="10.17487/RFC2119"/>
+      </reference>
+      <reference anchor="RFC8174" target="https://www.rfc-editor.org/info/rfc8174">
+        <front>
+          <title>Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words</title>
+          <author initials="B." surname="Leiba" fullname="B. Leiba"/>
+          <date month="May" year="2017"/>
+        </front>
+        <seriesInfo name="BCP" value="14"/>
+        <seriesInfo name="RFC" value="8174"/>
+        <seriesInfo name="DOI" value="10.17487/RFC8174"/>
+      </reference>
+    </references>
+    <references>
+      <name>Informative References</name>
+      <reference anchor="ISO10589" target="https://www.iso.org/standard/30932.html">
+        <front>
+          <title>Information technology - Telecommunications and information exchange between systems - Intermediate system to Intermediate system intra-domain routeing information exchange protocol for use in conjunction with the protocol for providing the connectionless-mode network service (ISO 8473)</title>
+          <author><organization>ISO/IEC</organization></author>
+          <date year="2002"/>
+        </front>
+        <seriesInfo name="ISO/IEC" value="10589:2002"/>
+      </reference>
+    </references>
+  </back>
+
+</rfc>
