@@ -48,9 +48,11 @@
         have outstanding, and an LSPs-per-PSNP (LPP) threshold that triggers
         immediate acknowledgment. In practice these two mechanisms -- a credit-based
         flow-control window and an acknowledgment cadence -- are the parts of
-        <xref target="RFC9681"/> that are realistically deployed at scale; the
+        <xref target="RFC9681"/> that are most important, useful, and likely to be
+        implemented at scale; the
         sender-side congestion-control algorithms described in that document are
-        local, optional, and not standardized.
+        described only as optional, local choices, without a single mandatory
+        algorithm.
       </t>
       <t>
         A credit-based window alone does not signal congestion: as long as
@@ -61,13 +63,20 @@
         sustained retransmission storms instead of converging.
       </t>
       <t>
-        This document defines a lightweight Retransmission (RTX) indication,
-        carried as a new flag in the existing Flags sub-TLV of the Flooding
-        Parameters TLV, that a node sets while it has outstanding LSP
-        retransmissions on an adjacency. It specifies recommended sender and
-        receiver behavior that ties this indication directly to the RWIN and LPP
-        mechanisms already defined in <xref target="RFC9681"/>, without requiring
-        implementation of a separate congestion-window algorithm.
+        This document specifies that a node SHOULD halve the effective
+        outstanding-LSP ceiling it uses against a neighbor's advertised RWIN
+        whenever the number of LSP retransmissions it has generated toward
+        that neighbor within a trailing time window exceeds a configured
+        threshold. This local backoff applies unconditionally, regardless of
+        whether it is signaled to, or understood by, the neighbor. This
+        document additionally defines a lightweight Retransmission (RTX)
+        indication, carried as a new flag in the existing Flags sub-TLV of the
+        Flooding Parameters TLV, that a node sets while it is in this
+        condition. Advertising the RTX flag lets the neighbor, in turn, adjust
+        its own advertised RWIN so that the adjacency converges toward a
+        stable operating point at the highest speed
+        it can sustain, without either side needing prior knowledge of the
+        other's or the link's characteristics.
       </t>
     </abstract>
   </front>
@@ -109,18 +118,20 @@
         congestion-control algorithm (<xref target="RFC9681" section="6.2.2"/>).
       </t>
       <t>
-        Experience indicates that if that reaction is not standardized in some
+        Experience indicates that if that reaction is not made mandatory in some
         minimal form, it will not be consistently implemented, and the fast
         flooding rates enabled by <xref target="RFC9681"/> can make things worse,
         not better, under loss or overload: nodes keep sending at the full
         advertised window and retransmission storms are sustained rather than
         damped. This document closes that gap without requiring a full
-        congestion-window algorithm. It defines a single-bit Retransmission (RTX)
-        indication, carried in the existing Flags sub-TLV
-        (<xref target="RFC9681" section="4.4"/>), and describes how a node
-        SHOULD adjust its effective sending behavior relative to RWIN, and how a
-        neighbor observing the indication SHOULD adjust its own RWIN and LPP
-        advertisements, while that indication is set.
+        congestion-window algorithm. It specifies that a node SHOULD locally
+        reduce its effective sending ceiling relative to RWIN whenever it is
+        retransmitting, independent of any signaling, and it defines a single-bit
+        Retransmission (RTX) indication, carried in the existing Flags sub-TLV
+        (<xref target="RFC9681" section="4.4"/>), that additionally lets a
+        neighbor observing the indication tune its own RWIN (and, optionally,
+        LPP) advertisement toward a stable value that sustains the highest speed
+        the adjacency can support without further retransmission.
       </t>
     </section>
 
@@ -158,13 +169,35 @@
         This is workable at the flooding rates for which <xref target="RFC9681"/>'s
         historical defaults were designed, but it is precisely the failure mode
         that fast flooding at larger scale must avoid: a receiver that falls
-        behind by a small margin can be kept continuously at its retransmission
-        threshold by a sender that never backs off, which in turn keeps
+        behind by a small margin can be kept continuously on the edge of
+        retransmission by a sender that never backs off, which in turn keeps
         generating the retransmissions that caused the problem in the first
-        place. A minimal, mandatory-to-honor signal that ties directly into the
-        RWIN and LPP mechanisms already deployed is sufficient to break this
-        cycle without requiring implementations to build and tune a separate
-        congestion-control algorithm.
+        place. A minimal, mandatory-to-honor local backoff at the sender --
+        halving the outstanding-LSP ceiling whenever the sender's rate of LSP
+        retransmissions toward that neighbor exceeds a configured threshold,
+        regardless of whether that condition is signaled -- is sufficient to
+        break this cycle without requiring implementations to build and tune a
+        separate congestion-control algorithm. Signaling that condition to the
+        neighbor additionally lets the advertised RWIN itself be tuned toward
+        the correct steady-state value for the current link and peer, rather
+        than being fixed forever at a conservative, offline-computed default
+        chosen without knowledge of either.
+      </t>
+      <t>
+        A single halving step is not guaranteed to be enough. If the mismatch
+        between the ceiling the sender was using and what the receiver and path
+        can actually sustain is larger than a factor of two, the sender may
+        continue retransmitting even after backing off once. It is therefore
+        highly desirable that the receiver, on seeing the RTX indication,
+        actively squelch its own advertised RWIN rather than merely holding it
+        steady: a lower advertised RWIN gives the sender a lower base to halve
+        against, and, since the RTX flag persists for as long as retransmission
+        continues, this can repeat over successive rounds until a stable point
+        is reached where retransmission stops. Symmetrically, once retransmission
+        has stopped, the window should be reopened again, but deliberately more
+        slowly than it was closed, so that the adjacency settles into a stable
+        operating point instead of oscillating between overload and underuse
+        (see <xref target="hysteresis"/>).
       </t>
     </section>
 
@@ -177,15 +210,57 @@
         in <xref target="RFC9681"/>).
       </t>
       <t>
-        A node sets the RTX flag on an adjacency while it has one or more
-        outstanding (unacknowledged, retransmit-timer-expired at least once)
-        LSPs toward the neighbor on that adjacency. It clears the RTX flag once
-        all such LSPs have been acknowledged. As with other Flooding Parameters
-        TLV state, the flag is advertised in IIHs and PSNPs
-        (<xref target="RFC9681" section="4"/>) and reflects the most recently
-        advertised value until updated; a node SHOULD advertise the Flags
-        sub-TLV promptly on a change in RTX state, rather than waiting for the
-        next periodic transmission, given how time-sensitive the condition is.
+        A node maintains, per adjacency, a count of the LSP retransmissions it
+        has generated toward the neighbor within a trailing retransmission
+        window of locally configured duration. It sets the RTX flag on that
+        adjacency when this count exceeds a locally configured retransmission
+        threshold, and clears the flag once the count falls back to or below
+        the threshold. As with other Flooding Parameters TLV state, the flag
+        is advertised in IIHs and PSNPs (<xref target="RFC9681" section="4"/>)
+        and reflects the most recently advertised value until updated.
+      </t>
+      <t>
+        Both the retransmission window and the retransmission threshold are
+        local matters, not signaled to the neighbor, and implementations
+        SHOULD make them configurable. A window on the order of a few times
+        the adjacency's round-trip acknowledgment time, and a threshold on
+        the order of a small number of retransmissions (e.g., 3), are
+        reasonable starting points: they are short and low enough to react
+        promptly to sustained loss, yet high enough that a single, isolated
+        retransmission does not by itself set the flag or trigger the
+        backoff of <xref target="sender"/>.
+      </t>
+
+      <t>
+        When the RTX flag transitions from clear to set, or when a node
+        reduces an RWIN or LPP value it advertises in reaction to the RTX flag
+        (<xref target="receiver"/>), the node SHOULD send an IIH carrying the
+        updated Flags, Receive Window, and LSPs-per-PSNP sub-TLVs immediately,
+        rather than waiting for its next regularly scheduled Hello: the sooner
+        a neighbor learns of the condition, the sooner it can stop sustaining
+        it by squelching its own advertised RWIN. Neither <xref target="ISO10589"/>
+        nor <xref target="RFC9681"/> defines an IIH sent outside the periodic
+        Hello schedule for this purpose; doing so here is additional behavior
+        recommended by this document and does not replace the regularly
+        scheduled IIHs.
+      </t>
+      <t>
+        By contrast, when the RTX flag clears, or when a node widens an RWIN
+        or LPP value it had previously reduced, no equivalent urgency applies:
+        the updated value SHOULD simply be carried in the next regularly
+        scheduled IIH or PSNP. This asymmetry is intentional and mirrors the
+        deliberately slow reopening described in <xref target="hysteresis"/>:
+        there is no benefit to rushing the good news, and doing so would only
+        invite oscillation.
+      </t>
+      <t>
+        The RTX flag is advertised so that a neighbor can tune its own RWIN
+        (and, optionally, LPP) advertisement toward a stable operating point, as
+        described in <xref target="receiver"/>. It is not what triggers the
+        sending node's own backoff: that backoff, described in
+        <xref target="sender"/>, is local and unconditional, and applies
+        whether or not the RTX flag is advertised or understood by the
+        neighbor.
       </t>
     </section>
 
@@ -193,33 +268,103 @@
       <name>Procedures</name>
 
       <section anchor="sender" numbered="true" toc="default">
-        <name>Sender Behavior</name>
+        <name>Sender Behavior (Local Backoff)</name>
         <t>
-          While the RTX flag is set for a given adjacency, the sender SHOULD
-          reduce its effective outstanding-LSP ceiling on that adjacency below
-          the full advertised RWIN, for example to half of RWIN, rather than
-          continuing to refill up to RWIN as acknowledgments arrive. The exact
-          reduction is a local matter; a simple halving is sufficient to
+          Whenever the retransmission threshold defined in
+          <xref target="rtx-flag"/> is exceeded on a given adjacency -- i.e.,
+          the node's own local trigger for setting the RTX flag on that
+          adjacency is met -- it SHOULD halve the effective outstanding-LSP
+          ceiling it uses on that adjacency, relative to the RWIN value
+          currently advertised by the neighbor, rather than continuing to
+          refill up to the full RWIN as acknowledgments arrive. This behavior
+          is local and unconditional: it applies regardless of whether the
+          node advertises the RTX flag, and regardless of whether the
+          neighbor understands it, so that an adjacency to a peer that does
+          not implement this document still benefits from the backoff. The
+          exact reduction is a local matter; a simple halving is sufficient to
           convert sustained retransmission into a self-damping condition
           without the bookkeeping of a full congestion window
           (<xref target="RFC9681" section="6.2.2"/>).
         </t>
         <t>
-          The sender SHOULD restore its ceiling toward the full advertised RWIN
-          only gradually after the RTX flag clears, rather than immediately,
-          to avoid oscillating back into the same condition.
+          A single halving step is not guaranteed to stop retransmission by
+          itself. If the neighbor also reduces its advertised RWIN in response
+          to the RTX indication (<xref target="receiver"/>), the sender halves
+          its ceiling again relative to that newly reduced value the next time
+          its retransmission count again exceeds the threshold, and so on for
+          as long as the condition persists. See <xref target="hysteresis"/>
+          for how this repeated, mutual reduction is expected to converge, and
+          for how the ceiling is subsequently reopened.
         </t>
       </section>
 
       <section anchor="receiver" numbered="true" toc="default">
-        <name>Receiver Behavior</name>
+        <name>Receiver Behavior (RWIN Convergence)</name>
         <t>
-          A node observing that its neighbor has set the RTX flag toward it
-          SHOULD NOT increase the RWIN value it advertises to that neighbor
-          while the flag remains set, and MAY advertise a reduced RWIN and/or a
-          reduced LPP (causing more frequent, smaller PSNPs) for the duration,
-          to help the sender recover the adjacency more quickly
-          (<xref target="RFC9681" section="4.3"/>, <xref target="RFC9681" section="4.6"/>).
+          A node observing that a neighbor has set the RTX flag toward it
+          SHOULD treat this as feedback that the RWIN (and, if used, LPP)
+          value it currently advertises to that neighbor exceeds what the
+          neighbor and the path between them can sustain, and SHOULD actively
+          squelch its advertised RWIN and/or LPP accordingly
+          (<xref target="RFC9681" section="4.3"/>, <xref target="RFC9681" section="4.6"/>),
+          rather than merely leaving the advertisement unchanged and waiting
+          for the sender's own backoff to be sufficient. It SHOULD advertise
+          the reduced value immediately, as described in
+          <xref target="rtx-flag"/>, rather than waiting for its next
+          regularly scheduled IIH.
+        </t>
+        <t>
+          Because the RTX flag remains set for as long as the neighbor keeps
+          retransmitting, a single reduction is not guaranteed to be enough:
+          if the flag is still set after the receiver's next opportunity to
+          re-advertise the Flooding Parameters TLV, it SHOULD reduce its
+          advertised RWIN further (e.g., halving it again), and repeat this on
+          each subsequent round for as long as the flag remains set. Combined
+          with the sender's own halving (<xref target="sender"/>), this mutual,
+          repeated reduction converges geometrically to a stable operating
+          point at which retransmission ceases, without either node needing
+          prior knowledge of the other's or the link's characteristics.
+        </t>
+      </section>
+
+      <section anchor="hysteresis" numbered="true" toc="default">
+        <name>Convergence and Hysteresis</name>
+        <t>
+          The mechanisms of <xref target="sender"/> and <xref target="receiver"/>
+          are deliberately asymmetric: closing the window, on either side, is
+          fast and multiplicative (halving), while reopening it is slow and
+          incremental. Once the RTX flag has cleared, a receiver MAY probe for
+          a higher sustainable RWIN, and a sender MAY correspondingly raise its
+          effective ceiling toward the newly advertised RWIN, but both SHOULD
+          do so in small steps over successive rounds rather than jumping back
+          to the prior value immediately. An immediate, full restoration would
+          likely reproduce the original overload and cause the RTX flag to be
+          set again on the very next round, oscillating between overload and
+          underuse instead of settling.
+        </t>
+        <t>
+          This fast-close/slow-open hysteresis is what allows the repeated,
+          mutual squeezing described in <xref target="sender"/> and
+          <xref target="receiver"/> to actually converge and then hold at a
+          stable point close to the highest speed the adjacency can sustain,
+          rather than merely oscillating between a too-fast state that
+          retransmits and a too-slow state that immediately reopens back into
+          retransmission.
+        </t>
+        <t>
+          The steps of the slow reopening are, per <xref target="rtx-flag"/>,
+          ordinarily carried on regularly scheduled IIHs rather than triggered
+          immediately. If a node's configured Hello interval is long, relying
+          solely on that periodic cadence could make reopening -- and hence
+          recovery of full flooding speed -- impractically slow even after
+          the condition that caused the squeeze is long gone. In that case, a
+          node SHOULD instead pace the reopening steps using a separate timer
+          dedicated to this purpose, decoupled from the Hello interval, so
+          that the rate of reopening can be chosen independently of how
+          infrequently Hellos are otherwise exchanged. This timer only paces
+          the sending of the already-slow, incremental widening steps of this
+          section; it does not apply to the fast-close case, which remains
+          governed by <xref target="rtx-flag"/>.
         </t>
       </section>
 
