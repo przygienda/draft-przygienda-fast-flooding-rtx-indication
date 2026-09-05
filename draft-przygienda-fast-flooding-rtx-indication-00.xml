@@ -423,6 +423,54 @@
         </t>
       </section>
 
+      <section anchor="stall-fallback" numbered="true" toc="default">
+        <name>Fallback on Persistent Non-Acknowledgment</name>
+        <t>
+          The mechanisms of <xref target="sender"/> through
+          <xref target="hysteresis"/> assume that acknowledgments
+          eventually arrive, even if delayed, infrequent, or reduced by an
+          ongoing squeeze. They do not by themselves address a neighbor
+          that stops acknowledging entirely, for example because it has
+          failed, become unreachable, or is otherwise not processing
+          received LSPs at all. Toward such a neighbor, repeatedly
+          reducing the effective sending ceiling per <xref target="sender"/>
+          only ever narrows the window further; it provides no path back
+          to useful progress and risks flooding toward that interface
+          stalling at a small residual rate, or effectively not at all,
+          instead of falling back to the unconditional guarantees that
+          IS-IS flooding has always provided.
+        </t>
+        <t>
+          To bound this risk, a sender SHOULD track, per adjacency, the
+          time or number of retransmission intervals elapsed since the
+          last acknowledgment covering any LSP was received from that
+          neighbor. If this exceeds a small, configurable multiple (e.g.,
+          three to five) of the retransmission interval in use, with no
+          acknowledgment at all seen in the interim, the sender SHOULD
+          abandon the negotiated fast-flooding parameters for that
+          adjacency and revert to the conservative, statically configured
+          flooding behavior of <xref target="RFC9681" section="3"/> (i.e.,
+          the historical, pre-fast-flooding defaults) until an
+          acknowledgment is again received from that neighbor. Once an
+          acknowledgment is observed, the sender MAY resume applying the
+          mechanisms of <xref target="sender"/> through
+          <xref target="hysteresis"/>, restarting from a conservative
+          starting point rather than from whatever ceiling was in effect
+          immediately before the fallback.
+        </t>
+        <t>
+          This fallback is a safety valve, not a replacement for the RTX
+          flag and RWIN-squeeze mechanisms described elsewhere in this
+          document: it is intended to activate only when there is no
+          evidence whatsoever that the neighbor is processing LSPs. Its
+          sole purpose is to guarantee that a persistently
+          non-acknowledging neighbor cannot cause the fast-flooding
+          feedback loop to stall indefinitely at some low but nonzero
+          rate; instead, the adjacency reverts to behavior at least as
+          conservative as legacy IS-IS flooding.
+        </t>
+      </section>
+
       <section anchor="lan" numbered="true" toc="default">
         <name>Applicability to LAN Interfaces</name>
         <t>
