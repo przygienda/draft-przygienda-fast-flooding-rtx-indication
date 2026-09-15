@@ -72,7 +72,10 @@
         understood by, the neighbor. This document additionally defines a
         lightweight Retransmission (RTX) indication, carried as a new flag in
         the existing Flags sub-TLV of the Flooding Parameters TLV, that a
-        node sets while it is in this condition. Advertising the RTX flag lets
+        node advertises to a neighbor while it is retransmitting LSPs toward
+        that neighbor. The flag reports only the advertising node's own
+        retransmissions, in that one direction, and a node never sets it in
+        reaction to a neighbor's flag. Advertising the RTX flag lets
         the neighbor, in turn, adjust its own advertised RWIN so that the
         adjacency converges toward a stable operating point at the highest
         speed it can sustain, without either side needing prior knowledge of
@@ -216,12 +219,37 @@
         in <xref target="RFC9681"/>).
       </t>
       <t>
+        The RTX flag is a statement by the node that sets it about its own
+        sending: it indicates that the node is currently retransmitting LSPs
+        toward the neighbor it is advertised to. It carries no other meaning.
+        In particular, it describes only the direction from the node setting
+        the flag to the neighbor receiving it; it says nothing about the
+        opposite direction of the same adjacency, and it is not a general
+        indication of node or link distress.
+      </t>
+      <t>
+        Consequently, a node MUST NOT set the RTX flag it advertises merely
+        because a neighbor has set the flag toward it, nor as a result of any
+        adjustment it makes in reaction to a neighbor's flag. A node sets the
+        flag on the basis of its own retransmissions only. Reflecting a
+        received flag back, directly or indirectly, would report a condition
+        the node has not observed, and would allow two nodes to drive each
+        other's advertised values steadily downward even though only one of
+        them, or neither, is actually retransmitting. For the same reason, the
+        flag advertised by a node and any reduction that node has made to its
+        own advertised RWIN or LPP are independent: either may be present
+        without the other.
+      </t>
+      <t>
         A node maintains, per adjacency, a count of the LSP retransmissions it
         has generated toward the neighbor within a trailing retransmission
         window of locally configured duration. It sets the RTX flag on that
         adjacency when this count exceeds a locally configured retransmission
-        threshold, and clears the flag once the count falls back to or below
-        the threshold. As with other Flooding Parameters TLV state, the flag
+        threshold. It clears the flag once retransmissions have subsided,
+        which, to avoid the flag alternating rapidly between set and clear
+        while the count hovers near the threshold, SHOULD require a more
+        conservative condition than the one that set it. As with other
+        Flooding Parameters TLV state, the flag
         is advertised in IIHs and PSNPs (<xref target="RFC9681" section="4"/>)
         and reflects the most recently advertised value until updated.
       </t>
