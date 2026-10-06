@@ -1,0 +1,11 @@
+*.txt
+*.pdf
+*.html
+*.expanded.xml
+*.nl.txt
+.idea/
+
+# Private notes live ONLY as ciphertext here and as plaintext under $HOME.
+# Belt and braces: never allow a decrypted copy inside the tree.
+.github/private-notes.md
+rtx-draft.instructions.md
