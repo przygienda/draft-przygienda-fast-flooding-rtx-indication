@@ -12,7 +12,7 @@ export PATH=$PATH:$HOME/.local/bin && ./build.sh
 Fast well-formedness check while iterating:
 
 ```
-xmllint --noout draft-przygienda-fast-flooding-rtx-indication-00.xml
+xmllint --noout draft-przygienda-lsr-fast-flooding-rtx-indication-00.xml
 ```
 
 Run the full `./build.sh` before declaring an edit done. Only xml2rfc catches

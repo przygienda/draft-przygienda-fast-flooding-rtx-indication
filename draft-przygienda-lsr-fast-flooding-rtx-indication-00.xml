@@ -7,7 +7,7 @@
 ]>
 <rfc xmlns:xi="http://www.w3.org/2001/XInclude"
      category="exp"
-     docName="draft-przygienda-fast-flooding-rtx-indication-00"
+     docName="draft-przygienda-lsr-fast-flooding-rtx-indication-00"
      ipr="trust200902"
      submissionType="IETF"
      consensus="false"

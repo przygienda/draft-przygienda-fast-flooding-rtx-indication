@@ -4,7 +4,7 @@
 # are added).
 set -euo pipefail
 
-D=draft-przygienda-fast-flooding-rtx-indication-00
+D=draft-przygienda-lsr-fast-flooding-rtx-indication-00
 
 xml2rfc --text "$D.xml"
 xml2rfc --allow-local-file-access --expand "$D.xml" -o "$D.expanded.xml"
